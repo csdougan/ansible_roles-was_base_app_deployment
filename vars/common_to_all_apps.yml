@@ -1,0 +1,8 @@
+---
+nexus_hostname: "abc-nexus.somehost.co.uk"
+nexus_port: 8081
+nexus_url: "http://{{ nexus_hostname }}:{{ nexus_port }}/nexus/service/local/repositories"
+nexus_ear_repository_url: "{{ nexus_url }}/{{ nexus_ear_repo_name }}/content/{{ application_groupid }}"
+application_file_name: "{{ application_artifactid }}-{{ application_version }}.ear"
+application_file_download_url: "{{ nexus_ear_repository_url }}/{{ application_artifactid }}/{{ application_version }}/{{ application_file_name }}"
+...

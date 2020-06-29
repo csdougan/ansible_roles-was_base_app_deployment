@@ -1,0 +1,50 @@
+---
+- name: Refresh wasAnsibleUtilities
+  copy: 
+    src: "{{ playbook_dir }}/modules/wasAnsibleUtilities.py" 
+    dest: "/usr/lib64/python/site-packages"
+    mode: 644
+
+- name: Start Virtual Frame Buffer
+  yum:
+    name: xorg-x11-server-Xvfb
+    state: present
+   
+- name: Ensure /etc/cron.allow exists
+  file:
+    path: /etc/cron.allow
+    state: touch
+ 
+- name: Enable WAS user to use cron
+  lineinfile: 
+    line: "{{ websphere_user }}"
+    dest: "/etc/cron.allow"
+    state: present
+    
+- name: Create EAR file housekeeping task
+  cron:
+    name: "Housekeep cached EAR file artifacts"
+    user: "{{ websphere_user }}"
+    hour: 5
+    minute: 0
+    job: "find {{ was_deployment_dir }} -name *.ear -mtime +{{ was_deployment_dir_retain_days }} -exec rm {} \\;"
+  when: "{{ docker_host|default(false)|bool }} == false"
+         
+# Note that the JAAS Authentication Data Entries have to be defined separately rather than iterating over with_items
+# as doing so reveals the password in the logs
+- name: Create CDB JAAS Authentication Data Entry
+  wasJAASAuthData:
+    alias: "{{ cdb_jaas_alias }}"
+    userId: "{{ cdb_jaas_user }}"
+    password: "{{ cdb_jaas_password }}"
+    description: "{{ cdb_jaas_description }}"
+    
+- name: Get Oracle J2EE Drivers for Oracle DataSource
+  get_url: 
+    url: "{{ was_jdbc_driver_url }}"
+    dest: "{{ was_install_path }}/lib/{{ ws_oracle_j2ee_drivers_jar }}"
+    force: yes
+    owner: "{{ websphere_user }}"
+    group: "{{ websphere_group }}"
+    
+...

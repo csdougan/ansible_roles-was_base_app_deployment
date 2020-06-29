@@ -1,0 +1,7 @@
+servername="{{ jvm_name }}"
+cell_name=AdminControl.getCell()
+node_name=AdminControl.getNode()
+AdminTask.createApplicationServer(node_name, '[-name {{ jvm_name }} -templateName default -genUniquePorts true ]')
+AdminConfig.save()
+AdminControl.startServer(servername,node_name)
+AdminConfig.save()

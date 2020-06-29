@@ -1,0 +1,63 @@
+---
+- include_vars: "../vars/clear_variables.yml"
+- include_vars: "{{ playbook_dir }}/vars/applications/{{ application_name }}.yml"
+- include_vars: "../vars/common_to_all_apps.yml"
+
+- name: Deploying {{ application_name }} app into jvm {{ jvm_name }}
+  debug:
+    msg: "Im deploying version {{ application_version }} of  application {{ application_name }}"
+
+- name: Get {{ application_name }} Application file from repository
+  get_url:
+    url: "{{ application_file_download_url }}"
+    dest: "{{ was_deployment_dir }}/{{ application_file_name }}"
+    force: "yes"
+    owner: "{{ websphere_user }}"
+    group: "{{ websphere_group }}"
+
+- name: Deploy application {{ application_name }} to jvm {{ jvm_name }} on WAS BASE server
+  wasBaseApplication:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    applicationName: "{{ application_name }}"
+    applicationVersion: "{{ application_version }}"
+    earFileLocation: "{{ was_deployment_dir }}/{{ application_file_name }}"
+#    virtualHost: "{{ scope_name }}"
+    classLoaderOrder: "{{ class_loader_order }}"
+    warClassLoaderPolicy: "{{ war_class_loader_policy }}"
+    state: "present"
+
+- name: Get Web Module name from Deployed App {{ application_name }}
+  command: >
+    cd {{ was_profile_path }} && sudo -u {{ websphere_user }} {{ was_profile_path }}/bin/wsadmin.sh -lang jython -c "AdminApp.listModules('{{ application_name }}','-CtxRootForWebMod')" | grep {{ application_name }}|awk -F# '{print $2}'|awk -F. '{print $1}'
+  register: get_webmodule_name
+
+- name: Set Web Module variable name for {{ application_name }}
+  set_fact:
+    web_module_name: "{{ get_webmodule_name.stdout }}"
+    warfile_name: "{{ get_webmodule_name.stdout }}.war"
+
+- name: Set Context Root of Application {{ application_name }}
+  command: >
+    cd {{ was_profile_path }} && sudo -u {{ websphere_user }} {{ was_profile_path }}/bin/wsadmin.sh -lang jython -c "AdminApp.edit('{{ application_name }}', '[ -CtxRootForWebMod [[ {{ web_module_name }} {{ warfile_name }},WEB-INF/web.xml {{ context_root }} ]]]')"
+  when: (context_root is defined) and (context_root != "") and (application_name is defined)
+
+#- name: Start application after deploy ends
+#  wasAppCtrl:
+#    name: "{{ deploy_scope }}"
+#    nodeName: "{{ inventory_hostname }}"
+##    members: "{{ clone_count }}"
+#    appName: "{{ application_name }}"
+#    action: start
+#  when: disable_restart|default(false)|bool == false
+
+#22. Disable auto-start of applications after deploy if specified
+#- name: Disable auto-start application after deploy
+#  wasAppCtrl:
+#    name: "{{ deploy_scope }}"
+#    nodeName: "{{ inventory_hostname }}"
+##    members="{{ clone_count }}"
+#    appName: "{{ application_name }}"
+#    action: appdisableautostart
+#  when: disable_restart|default(false)|bool == true
+...

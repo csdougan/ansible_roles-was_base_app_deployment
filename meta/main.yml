@@ -1,0 +1,5 @@
+---
+dependencies:
+- { role: getvars }
+- { role: was_deploy_agent }
+

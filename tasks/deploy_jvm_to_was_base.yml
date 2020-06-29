@@ -1,0 +1,260 @@
+---
+- set_fact:
+    host_index: "{% for groupname in groups %}{% if inventory_hostname in groups[groupname] and groupname != 'all' and groupname != 'ungrouped' and groupname != 'jvms' %}{% for host in groups[groupname] %}{% if host == inventory_hostname %}{{ loop.index|int }}{% endif %}{% endfor %}{% endif %}{% endfor %}"
+
+# For Non-ABC servers each inventory_group that is a member of the jvms group is the first part of a JVM name, i.e. 'MyApp'.  This will then be postfixed with the index number of the server in the group to make the full JVM name - i.e. MyApp1, MyApp2 and so on.  The index number is always incremented by one before using it to make the JVM name, as the index always starts at 0, whereas our JVMs index number always starts at 1 (we wouldn't have a 'MyApp0' for example).
+- set_fact:
+    jvm_name: "{% for groupname in groups %}{% if inventory_hostname in groups['jvms'] and inventory_hostname in groups[groupname] and groupname != 'all' and groupname != 'ungrouped' and groupname != 'jvms' %}{{ groupname }}{%endif%}{%endfor %}{{ host_index }}"
+    when: abc_jvm_name_format|default(false)|bool == false
+
+# For ABC servers, each inventory_group that is a member of the jvms group is the name of a JVM.   This is because there will be a 'MyApp1' and 'MyApp2' on serverA and the same on serverB.  This is different to how all other servers do it which will have a 'MyApp1' on serverA, 'MyApp2' on serverB and so on.
+- set_fact:
+    jvm_name: "{% for groupname in groups %}{% if inventory_hostname in groups['jvms'] and inventory_hostname in groups[groupname] and groupname != 'all' and groupname != 'ungrouped' and groupname != 'jvms' %}{{ groupname }}{%endif%}{%endfor %}"
+    when: abc_jvm_name_format|default(false)|bool == true
+
+- name: Check if jvm/server {{ jvm_name }} already exists
+  shell: "{{ was_profile_path }}/bin/wsadmin.sh -lang jython -c \"AdminConfig.getid('/Server:{{ jvm_name }}')\" |grep -v \"Connected to\"| sed \"s/'//g\"|grep servers"
+  register: check_if_jvm_exists 
+  failed_when: false
+  ignore_errors: true
+
+- name: Create jvm creation jython script for {{ jvm_name }}
+  template:
+    src: "../templates/create-jvm.j2"
+    dest: "{{ was_deployment_dir }}/create_jvm_{{ jvm_name }}.jf"
+    owner: "{{ websphere_user }}"
+    group: "{{ websphere_group }}"
+  when: check_if_jvm_exists.rc != 0
+
+- name: Create jvm/server {{ jvm_name }}
+  shell: "{{ was_profile_path }}/bin/wsadmin.sh -lang jython -f {{ was_deployment_dir }}/create_jvm_{{ jvm_name }}.jf"
+  when: check_if_jvm_exists.rc != 0
+
+- name: Ensure jvm custom property template file exists for {{ jvm_name }}
+  file:
+    owner: "{{ websphere_user }}"
+    group: "{{ websphere_group }}"
+    path: "{{ was_deployment_dir }}/{{ jvm_name }}_jvmcp.yml"
+    state: touch
+
+- name: Create jvm custom property template for {{ jvm_name }}
+  lineinfile:
+    dest: "{{ was_deployment_dir }}/{{ jvm_name }}_jvmcp.yml"
+    line: "{{ jvmcp.name }}:    { value: \"{{ jvmcp.value }}\" }"
+  loop_control:
+    loop_var: jvmcp
+  with_items: " {{ jvm_custom_properties }} "
+                                                               
+#- name: Create WAS Virtual Host Alias config from template
+#  template:
+#    src: "../templates/vhost_aliases/{{ jvm_name }}.yml"
+#    dest: "{{ was_deployment_dir }}/{{ jvm_name }}_vha.yml"
+#    owner: "{{ websphere_user }}" 
+#    group: "{{ websphere_group }}"
+#    mode: "440"
+
+#- name: Create WAS Virtual Host
+#  wasVirtualHost:
+#    name: "{{ jvm_name }}"
+#    state: "present"
+#
+#- name: Create WAS Host Aliases
+#  wasVirtualHostAlias:
+#    virtualHost: "{{ jvm_name }}"
+#    file: "{{ was_deployment_dir }}/{{ jvm_name }}_vha.yml"
+#    state: "present"
+#
+- name: Set stdout logging properties for {{ jvm_name }}
+  wasJVMLogs:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    stream: "outputStreamRedirect"
+    fileName: "${SERVER_LOG_ROOT}/SystemOut.log"
+    rolloverType: "SIZE"
+    maxNumberOfBackupFiles: "{{ number_of_jvm_logs_backup_files }}"
+    rolloverSize: "{{ jvm_logs_backup_files_size }}"
+
+- name: Set stderr logging properties for {{ jvm_name }}
+  wasJVMLogs:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    stream: "errorStreamRedirect"
+    fileName: "${SERVER_LOG_ROOT}/SystemErr.log"
+    rolloverType: "SIZE"
+    maxNumberOfBackupFiles: "{{ number_of_jvm_logs_backup_files }}"
+    rolloverSize: "{{ jvm_logs_backup_files_size }}"
+
+- name: Set JVM Properties for {{ jvm_name }}
+  wasJVMProperties:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    verboseModeGarbageCollection: "{{ verbose_mode_garbage_collection }}"
+    initialHeapSize: "{{ initial_heap_size }}"
+    maximumHeapSize: "{{ maximum_heap_size }}"
+    debugArgs: "{{ jvm_debug_args }}"
+    genericJvmArguments: "{{ jvm_generic_args }}"
+
+- name: Set JVM Custom Properties for {{ jvm_name }}
+  wasJVMCustomProperties:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    file: "{{ was_deployment_dir }}/{{ jvm_name }}_jvmcp.yml"
+    sync: "true"
+    state: "present"
+
+- name: Set JVM Environment Entries for {{ jvm_name }}
+  wasJVMEnvironmentEntries:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    name: "DISPLAY"
+    value: "localhost:{{ xvfb_screen }}"
+    state: "present"
+
+- name: Create JDBC Providers for {{ jvm_name }}
+  wasJDBCProvider:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    databaseType: "{{ item.database_type }}"
+    providerType: " {{ item.provider_type }}"
+    implementationType: "{{ item.implementation_type }}"
+    classPath: "{{ ws_oracle_j2ee_drivers_dir }}/{{ ws_oracle_j2ee_drivers_jar }}"
+  with_items: "{{ jdbc_providers }}"
+  when: jdbc_providers is defined
+
+- name: Create Data Sources for {{ jvm_name }}
+  wasDataSource:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    jdbcProviderName: "{{ item.jdbc_provider_name }}"
+    name: "{{ item.name }}"
+    jndiName: "{{ item.jndi_name }}"
+    containerManagedPersistence: "{{ item.container_managed_persistence }}"
+    dataStoreHelperClassName: "{{ item.datastore_helper_class_name }}"
+    componentManagedAuthenticationAlias: "{{ item.component_managed_authentication_alias }}"
+    mappingConfigAlias: "{{ item.mapping_config_alias }}"
+    URL: "{{ item.url }}"
+    statementCacheSize: "{{ item.statement_cache_size }}"
+    connectionTimeout: "{{ item.connection_timeout }}"
+    maxConnections: "{{ item.max_connections }}"
+    minConnections: "{{ item.min_connections }}"
+    reapTime: "{{ item.reap_time }}"
+    unusedTimeout: "{{ item.unused_timeout }}"
+    agedTimeout: "{{ item.aged_timeout }}"
+    purgePolicy: "{{ item.purge_policy }}"
+    description: "{{ item.description }}"
+  with_items: "{{ cdb_datasources }}"
+  when: cdb_datasources is defined
+
+- name: Create Queue Connection Factories for {{ jvm_name }}
+  wasWMQConnectionFactory:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    type: QCF
+    name: "{{ item.name }}"
+    jndiName: "{{ item.jndi_name }}"
+    ccdtQmgrName: "{{ item.qmgr_name }}"
+    msgRetention: YES
+    ccdtUrl: "file:////{{ was_profile_path }}/{{ item.ccdt_file }}"
+  with_items: "{{ queue_connection_factories }}"
+  when: queue_connection_factories is defined
+  ignore_errors: yes
+
+- name: Create MQ Queues for {{ jvm_name }}
+  wasMQQueue:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    name: "{{ item.name }}"
+    jndiName: "{{ item.jndi_name }}"
+    queueName: "{{ item.name }}"
+    persistence: "{{ item.persistence }}"
+    priority: "{{ item.priority }}"
+    expiry: "{{ item.expiry }}"
+    ccsid: "{{ item.ccsid }}"
+    useNativeEncoding: "{{ item.use_native_encoding }}"
+    description: "{{ item.description }}"    
+  with_items: "{{ mq_queues }}"
+  when: mq_queues is defined
+
+- name: Create MQ Topics for {{ jvm_name }}
+  wasMQTopics:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    name: "{{ item.name }}"
+    jndiName: "jms/{{ item.name }}"
+    topicName: "{{ item.name }}"
+  with_items: "{{ mq_topics }}"
+  when: mq_topics is defined
+
+- name: Create Beanstore Server Activation Specification for {{ jvm_name }}
+  wasActivationSpecification:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ scope_name }}"
+    name: "{{ item.name }}"
+    jndiName: "{{ item.jndi_name }}"
+    destinationJndiName: "{{ item.destination_jndi_name }}"
+    destinationType: "{{ item.destination_type }}"
+    ccdtUrl: "{{ item.ccdt_file }}"
+    ccdtQmgrName: "{{ item.qmgr_name }}"
+    failureDeliveryCount: "{{ item.failure_count }}"
+  with_items: "{{ activation_specification }}"
+  when: activation_specification is defined
+
+- name: Set PMI Service for {{ jvm_name }}
+  wasPMIService:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    enable: true
+    synchronizedUpdate: false
+    statisticSet: custom
+  when: enable_pmi_service|default(false)|bool == true
+
+- name: Set PMI Module metrics for when BMC client is installed for {{ jvm_name }}
+  wasPMIModule:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    moduleName: "{{ item.name }}"
+    metrics: "{{ item.metrics }}"
+    state: "{{ item.state }}"
+  with_items: "{{ pmi_modules }}"
+  when: (enable_pmi_service|default(false)|bool == true) and (pmi_modules is defined) and (item.with_bmc|bool == true) and (bmc_installed|bool  == true)
+
+- name: Set PMI Module metrics for when BMC client is NOT installed for {{ jvm_name }}
+  wasPMIModule:
+    scope: "{{ was_deploy_scope }}"
+    scopeName: "{{ jvm_name }}"
+    moduleName: "{{ item.name }}"
+    metrics: "{{ item.metrics }}"
+    state: "{{ item.state }}"
+  with_items: "{{ pmi_modules }}"
+  when: ( enable_pmi_service|default(false)|bool  == true) and ( pmi_modules is defined) and (item.with_bmc|bool == false) and (bmc_installed|bool == false)
+
+- name: Map EJB references to JNDI Name for {{ jvm_name }}
+  wasMapEJBReferenceToEJB:
+    application: "{{ item.name }}"
+    ejbName: "{{ item.ejb_name }}"
+    targetJNDIName: "{{ item.target_jndi_name }}"
+  with_items: "{{ applications }}"
+  when: (applications is defined) and (item.ejb_name|default('') != '') and (item.target_jndi_name|default('') != '')
+
+- name: Set EJB JNDI Bindings for Messages for {{ jvm_name }}
+  wasEJBJNDIBinding:
+    application: "{{ item.name }}"
+    ejbName: "{{ item.ejb_name }}"
+    bindingType: MESSAGE
+    targetJNDIName: "{{ item.target_jndi_name }}"
+  with_items: "{{ applications }}"
+  when: (applications is defined) and (item.ejb_name|default('') != '')  and ( item.target_jndi_name|default('') != '') and (item.set_jndi_message_binding|default(false)|bool == true)
+
+- name: Set EJB JNDI Bindings for Non-Messages for {{ jvm_name }}
+  wasEJBJNDIBinding:
+    application: "{{ item.name }}"
+    ejbName: "{{ item.ejb_name }}"
+    bindingType: MESSAGE
+    targetJNDIName: "{{ item.target_jndi_name }}"
+  with_items: "{{ applications }}"
+  when: ( applications is defined ) and  (item.ejb_name|default('')  != '')  and (item.target_jndi_name|default('') != '') and (item.set_jndi_nonmessage_binding|default(false)|bool == true)
+
+- include: deploy_application_to_was_base.yml application_name={{ item.name }} application_version={{ item.version }}
+  with_items: "{{ applications }}"
+  when: applications is defined
+

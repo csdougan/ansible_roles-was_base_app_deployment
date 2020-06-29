@@ -1,0 +1,3 @@
+---
+- include: common_tasks.yml
+- include: deploy_jvm_to_was_base.yml 
